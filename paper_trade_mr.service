@@ -1,5 +1,5 @@
 [Unit]
-Description=algo_3kings_mr - Bybit Quant Bot (PAPER TRADE / paper_trade.py)
+Description=algo_3kings_mr - Quant Bot (PAPER TRADE / paper_trade.py)
 After=network.target
 
 [Service]

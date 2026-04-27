@@ -52,17 +52,17 @@
 #### Running via Systemd
 1. Move the file to Systemd's system folder.
     ```shell script
-    sudo cp ./paper_trade_mr.service /etc/systemd/system/paper_trade_mr.service
+    sudo cp ./paper_trade_rm.service /etc/systemd/system/paper_trade_rm.service
     ```
 2. Enable and start the service.
     ```shell script
     sudo systemctl daemon-reload
-    sudo systemctl enable paper_trade_mr.service
-    sudo systemctl start paper_trade_mr.service
+    sudo systemctl enable paper_trade_rm.service
+    sudo systemctl start paper_trade_rm.service
     ```
 3. Check if the application is running.
     ```shell script
-    sudo systemctl status paper_trade_mr.service
+    sudo systemctl status paper_trade_rm.service
     ```
 # 3kings_rm
 
