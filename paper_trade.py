@@ -306,6 +306,11 @@ class PaperTradeBot:
         self.account = account
         self.csv_path = csv_path
         self.bot = ATMBot(ex=ex, session=session, on_signal=self._on_signal)
+        # ATM_ADX_CHOP: override RegimeFilter.adx_chop at runtime without touching engine code
+        _adx_chop_env = os.environ.get("ATM_ADX_CHOP", "")
+        if _adx_chop_env:
+            self.bot.regime.adx_chop = float(_adx_chop_env)
+            logger.info("RegimeFilter.adx_chop overridden to %.1f via ATM_ADX_CHOP", self.bot.regime.adx_chop)
         self._last_summary_t = time.time()
         self._ex = ex
         self._session = session
@@ -592,6 +597,7 @@ def main() -> None:
         equity_usdt=float(os.environ.get("ATM_EQUITY_USDT", "600")),
         taker_fee_rate=float(os.environ.get("TAKER_FEE", "0.00035")),
         round_trip_fee_rate=float(os.environ.get("ROUND_TRIP_FEE", "0.0003")),
+        z_window=int(os.environ.get("ATM_Z_WINDOW", "45")),
         z_entry_min=float(os.environ.get("ATM_Z_ENTRY_MIN", "1.5")),
         z_entry_max=float(os.environ.get("ATM_Z_ENTRY_MAX", "2.5")),
         min_abs_imbalance=float(os.environ.get("ATM_IMB_MIN", "0.03")),
