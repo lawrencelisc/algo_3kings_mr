@@ -80,7 +80,7 @@ class RegimeFilter:
 
     # *** [A] ROUND5: exhaustion_ok now uses consecutive-bar counter instead of
     # *** rate/accel double-diff.  The old params are kept for diagnostic calls only.
-    adx_confirm_bars: int = 3       # ADX must be < adx_chop for this many consecutive 1H bars
+    adx_confirm_bars: int = 2       # ADX must be < adx_chop for this many consecutive 1H bars
 
     # Legacy momentum params — kept so adx_mom() can still be called for diagnostics/logging
     adx_smooth: int = 5             # raised from 3 → smoother series for rate/accel diag

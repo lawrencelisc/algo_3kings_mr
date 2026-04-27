@@ -594,12 +594,12 @@ def main() -> None:
         round_trip_fee_rate=float(os.environ.get("ROUND_TRIP_FEE", "0.0003")),
         z_entry_min=float(os.environ.get("ATM_Z_ENTRY_MIN", "1.5")),
         z_entry_max=float(os.environ.get("ATM_Z_ENTRY_MAX", "2.5")),
-        min_abs_imbalance=float(os.environ.get("ATM_IMB_MIN", "0.05")),
-        rr_min=float(os.environ.get("ATM_RR_MIN", "1.2")),
-        min_tp_fee_multiple=float(os.environ.get("ATM_MIN_TP_FEE_MULT", "5.0")),
+        min_abs_imbalance=float(os.environ.get("ATM_IMB_MIN", "0.03")),
+        rr_min=float(os.environ.get("ATM_RR_MIN", "1.0")),
+        min_tp_fee_multiple=float(os.environ.get("ATM_MIN_TP_FEE_MULT", "3.0")),
         maker_rebate_rate=float(os.environ.get("MAKER_REBATE", "-0.000384")),
         vol_proxy_window=int(os.environ.get("ATM_VP_WINDOW", "10")),
-        vol_proxy_decay=float(os.environ.get("ATM_VP_DECAY", "0.80")),
+        vol_proxy_decay=float(os.environ.get("ATM_VP_DECAY", "0.90")),
     )
     ex = _exchange_from_env()
     ex.load_markets()
