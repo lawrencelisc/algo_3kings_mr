@@ -20,14 +20,14 @@
 
     Ubuntu 20.04 (Debian-based Linux)
     ```shell script
-    cd ./algo_3kings_rm
+    cd ./algo_3kings_mr
     python3.12 -m venv venv/
     source ./venv/bin/activate
     ```
    
     Windows 10
     ```shell script
-    cd .\algo_3kings_rm
+    cd .\algo_3kings_mr
     python -m venv .\venv\
     .\venv\Scripts\activate
     ```
@@ -52,17 +52,17 @@
 #### Running via Systemd
 1. Move the file to Systemd's system folder.
     ```shell script
-    sudo cp ./paper_trade_rm.service /etc/systemd/system/paper_trade_rm.service
+    sudo cp ./paper_trade_mr.service /etc/systemd/system/paper_trade_mr.service
     ```
 2. Enable and start the service.
     ```shell script
     sudo systemctl daemon-reload
-    sudo systemctl enable paper_trade_rm.service
-    sudo systemctl start paper_trade_rm.service
+    sudo systemctl enable paper_trade_mr.service
+    sudo systemctl start paper_trade_mr.service
     ```
 3. Check if the application is running.
     ```shell script
-    sudo systemctl status paper_trade_rm.service
+    sudo systemctl status paper_trade_mr.service
     ```
 # 3kings_rm
 
