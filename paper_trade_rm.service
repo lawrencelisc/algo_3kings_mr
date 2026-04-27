@@ -1,0 +1,16 @@
+[Unit]
+Description=algo_3kings_rm - Bybit Quant Bot (PAPER TRADE / paper_trade.py)
+After=network.target
+
+[Service]
+Type=simple
+Environment=SSL_CERT_FILE=/usr/local/app/algo_3kings_rm/venv/lib/python3.12/site-packages/certifi/cacert.pem
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/usr/local/app/algo_3kings_rm
+ExecStart=/usr/local/app/algo_3kings_rm/venv/bin/python3.12 -u paper_trade.py
+Restart=always
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target

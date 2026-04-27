@@ -1,0 +1,6 @@
+ccxt
+numpy
+pandas
+PyYAML
+dotenv
+pyarrow
