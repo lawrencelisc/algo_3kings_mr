@@ -627,12 +627,22 @@ class PaperTradeBot:
         fetch_workers = min(int(os.environ.get("PT_FETCH_WORKERS", "5")), len(symbols))
 
         def _fetch_one(sym: str) -> None:
-            try:
-                o1m = [list(x) for x in self._ex.fetch_ohlcv(sym, "1m", limit=200)]
-                o1h = [list(x) for x in self._ex.fetch_ohlcv(sym, "1h", limit=200)]
-                self._ohlcv_cache[sym] = {"1m": o1m, "1h": o1h}
-            except Exception as e:
-                logger.warning("OHLCV fetch error %s: %s", sym, e)
+            """帶 429 退避重試的 OHLCV 拉取（最多 3 次，1s / 2s 間隔）。"""
+            for attempt in range(3):
+                try:
+                    o1m = [list(x) for x in self._ex.fetch_ohlcv(sym, "1m", limit=200)]
+                    time.sleep(0.15)   # 同 symbol 兩個 timeframe 之間留間隙
+                    o1h = [list(x) for x in self._ex.fetch_ohlcv(sym, "1h", limit=200)]
+                    self._ohlcv_cache[sym] = {"1m": o1m, "1h": o1h}
+                    return
+                except Exception as e:
+                    if "429" in str(e) and attempt < 2:
+                        wait = 2 ** attempt   # 1s → 2s
+                        logger.warning("429 on %s, retry in %ds (attempt %d)", sym, wait, attempt + 1)
+                        time.sleep(wait)
+                    else:
+                        logger.warning("OHLCV fetch error %s: %s", sym, e)
+                        return
 
         while True:
             now = datetime.now(timezone.utc)
