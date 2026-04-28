@@ -82,6 +82,8 @@ class SimPosition:
     adx_at_entry: float
     z_at_entry: float
     imb_at_entry: float
+    mei: Optional[float] = None   # 記錄用，不影響邏輯
+    pos_mult: float = 1.0         # 記錄用
 
     def unrealized_pnl(self, mark: float) -> float:
         if self.side == "long":
@@ -116,8 +118,6 @@ class SimAccount:
         self.equity += fee
         self.positions[pos.symbol] = pos
         self._trade_counter += 1
-        mei_v    = sig.get("mei")
-        pos_mult = sig.get("pos_mult", 1.0)
         logger.info(
             "OPEN  #%d  %s %s  qty=%.6f  entry=%.4f  TP=%.4f  SL=%.4f  "
             "regime=%s  ADX=%.1f  Z=%.2f  imb=%.2f  "
@@ -125,7 +125,7 @@ class SimAccount:
             self._trade_counter, pos.side.upper(), pos.symbol,
             pos.amount, pos.entry_price, pos.tp_price, pos.sl_price,
             pos.regime, pos.adx_at_entry, pos.z_at_entry, pos.imb_at_entry,
-            f"{mei_v:.3f}" if mei_v is not None else "n/a", pos_mult,
+            f"{pos.mei:.3f}" if pos.mei is not None else "n/a", pos.pos_mult,
         )
 
     def close(self, symbol: str, exit_price: float, reason: str) -> Optional[Dict]:
@@ -387,8 +387,88 @@ class PaperTradeBot:
             adx_at_entry=float(sig.get("adx") or 0.0),
             z_at_entry=float(z_val),
             imb_at_entry=float(sig.get("imb") or 0.0),
+            mei=sig.get("mei"),
+            pos_mult=float(sig.get("pos_mult", 1.0)),
         )
         self.account.open(pos)
+
+    # ── 純 Z-score 入場 loop（無 regime / MEI / volume-proxy / imbalance gate）──
+
+    def _simple_z_entry_loop(self, symbols: List[str]) -> None:
+        """
+        最精簡 MR 入場：
+          Entry : |Z| ∈ [z_entry_min, z_entry_max]（1m rolling Z-score）
+          TP    : 45m mean（Z 回歸 0）
+          SL    : entry ± 1× ATR(14, 1H)
+        所有其他 Gate（regime、exhaustion、volume proxy、MEI、imbalance）全部移除。
+        """
+        z_min = self._session.z_entry_min
+        z_max = self._session.z_entry_max
+        z_win = self._session.z_window
+
+        for symbol in symbols:
+            if symbol in self.account.positions:
+                continue
+
+            cache = self._ohlcv_cache.get(symbol, {})
+            o1m = cache.get("1m", [])
+            o1h = cache.get("1h", [])
+            if not o1m or not o1h:
+                continue
+
+            closes_1m = [x[4] for x in o1m]
+            zs = rolling_z_score(closes_1m, z_win)
+            if not zs:
+                continue
+            z_val, _z_mean, _z_std = zs
+
+            side: Optional[str] = None
+            if -z_max <= z_val <= -z_min:
+                side = "long"
+            elif z_min <= z_val <= z_max:
+                side = "short"
+
+            if side is None:
+                continue
+
+            try:
+                ticker = self._ex.fetch_ticker(symbol)
+                mark = float(ticker.get("last") or closes_1m[-1])
+            except Exception:
+                mark = closes_1m[-1]
+
+            try:
+                ob = self._ex.fetch_order_book(symbol, 3)
+            except Exception:
+                ob = {}
+            cs = "buy" if side == "long" else "sell"
+            fill_price = _sim_fill_price(ob, cs, mark)
+
+            tp_price, sl_price = _compute_tp_sl(o1h, o1m, side, fill_price)
+
+            notional = self._session.equity_usdt * self._session.risk_fraction_per_symbol * 8.0
+            raw_amt = notional / max(fill_price, 1e-9)
+            try:
+                amount = float(self._ex.amount_to_precision(symbol, raw_amt))
+            except Exception:
+                amount = round(raw_amt, 6)
+            if amount <= 0:
+                continue
+
+            pos = SimPosition(
+                symbol=symbol,
+                side=side,
+                entry_price=fill_price,
+                amount=amount,
+                entry_time=time.time(),
+                tp_price=tp_price,
+                sl_price=sl_price,
+                regime="z_only",
+                adx_at_entry=0.0,
+                z_at_entry=float(z_val),
+                imb_at_entry=0.0,
+            )
+            self.account.open(pos)
 
     # ── 倉位管理（每 tick 檢查）────────────────────────────────────────────
 
@@ -573,9 +653,9 @@ class PaperTradeBot:
                     pass
 
             try:
-                self.bot.atm_trigger_loop(symbols, now=now)
+                self._simple_z_entry_loop(symbols)
             except Exception as e:
-                logger.exception("atm_trigger_loop error: %s", e)
+                logger.exception("z_entry_loop error: %s", e)
 
             if diag_every > 0 and (time.time() - last_diag_t) >= diag_every:
                 self._log_diagnostics(symbols, now)
