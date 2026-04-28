@@ -431,18 +431,8 @@ class PaperTradeBot:
             if side is None:
                 continue
 
-            try:
-                ticker = self._ex.fetch_ticker(symbol)
-                mark = float(ticker.get("last") or closes_1m[-1])
-            except Exception:
-                mark = closes_1m[-1]
-
-            try:
-                ob = self._ex.fetch_order_book(symbol, 3)
-            except Exception:
-                ob = {}
-            cs = "buy" if side == "long" else "sell"
-            fill_price = _sim_fill_price(ob, cs, mark)
+            # 使用緩存的最新 1m close 作為成交價（紙交易不需額外 REST）
+            fill_price = float(closes_1m[-1])
 
             tp_price, sl_price = _compute_tp_sl(o1h, o1m, side, fill_price)
 
@@ -475,11 +465,12 @@ class PaperTradeBot:
     def _check_positions(self) -> None:
         for symbol in list(self.account.positions.keys()):
             pos = self.account.positions[symbol]
-            try:
-                ticker = self._ex.fetch_ticker(symbol)
-                mark = float(ticker.get("last") or pos.entry_price)
-            except Exception:
-                continue
+            # 使用緩存的最新 1m close，避免每 tick 打 fetch_ticker
+            o1m_cache = self._ohlcv_cache.get(symbol, {}).get("1m", [])
+            if o1m_cache:
+                mark = float(o1m_cache[-1][4])
+            else:
+                mark = pos.entry_price
 
             reason = None
 
