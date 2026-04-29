@@ -85,6 +85,7 @@ class SimPosition:
     mei: Optional[float] = None   # 記錄用，不影響邏輯
     pos_mult: float = 1.0         # ATMBot MEI 乘數（記錄用）
     size_mult: float = 1.0        # ROUND10: AXS/SHORT 縮倉乘數（記錄用）
+    entry_fee: float = 0.0        # 開倉手續費（已在 open() 從 equity 扣除，記錄用）
 
     def unrealized_pnl(self, mark: float) -> float:
         if self.side == "long":
@@ -130,6 +131,7 @@ class SimAccount:
         # 開倉：扣 maker fee（0.0384%）
         entry_fee = pos.entry_price * pos.amount * self.maker_fee
         self.equity -= entry_fee
+        pos.entry_fee = entry_fee  # 存入 pos 供 close() 寫 CSV
         self.positions[pos.symbol] = pos
         self._trade_counter += 1
         logger.info(
@@ -148,42 +150,47 @@ class SimAccount:
         if pos is None:
             return None
         # 平倉費用：SL 用 taker 0.0400%（market order），TP/DECEL 用 maker 0.0384%
-        # entry_fee 已在 open() 扣除，不在此重複計
         exit_fee_rate = self.taker_fee if reason == "SL" else self.maker_fee
         exit_fee = exit_price * pos.amount * exit_fee_rate
+        entry_fee = getattr(pos, "entry_fee", 0.0)
         if pos.side == "long":
             gross_pnl = (exit_price - pos.entry_price) * pos.amount
         else:
             gross_pnl = (pos.entry_price - exit_price) * pos.amount
-        net_pnl = gross_pnl - exit_fee
-        self.equity += net_pnl
+        # net_pnl（CSV 用）= 來回費用都計入，方便對帳
+        net_pnl = gross_pnl - entry_fee - exit_fee
+        # equity 只加 gross_pnl - exit_fee：
+        # entry_fee 在 open() 時已從 equity 扣過，不能再扣
+        self.equity += gross_pnl - exit_fee
         hold_min = (time.time() - pos.entry_time) / 60.0
         rec = {
-            "trade_id": self._trade_counter,
-            "symbol": symbol,
-            "side": pos.side,
+            "trade_id":    self._trade_counter,
+            "symbol":      symbol,
+            "side":        pos.side,
             "entry_price": pos.entry_price,
-            "exit_price": exit_price,
-            "amount": pos.amount,
-            "gross_pnl": round(gross_pnl, 6),
-            "fee_exit": round(exit_fee, 6),
-            "net_pnl": round(net_pnl, 6),
-            "hold_min": round(hold_min, 1),
-            "reason": reason,
-            "regime": pos.regime,
-            "adx_entry": round(pos.adx_at_entry, 2),
-            "z_entry": round(pos.z_at_entry, 3),
-            "imb_entry": round(pos.imb_at_entry, 3),
-            "size_mult": round(getattr(pos, "size_mult", 1.0), 3),
+            "exit_price":  exit_price,
+            "amount":      pos.amount,
+            "gross_pnl":   round(gross_pnl, 6),
+            "fee_entry":   round(entry_fee, 6),
+            "fee_exit":    round(exit_fee, 6),
+            "fee_total":   round(entry_fee + exit_fee, 6),
+            "net_pnl":     round(net_pnl, 6),
+            "hold_min":    round(hold_min, 1),
+            "reason":      reason,
+            "regime":      pos.regime,
+            "adx_entry":   round(pos.adx_at_entry, 2),
+            "z_entry":     round(pos.z_at_entry, 3),
+            "imb_entry":   round(pos.imb_at_entry, 3),
+            "size_mult":   round(getattr(pos, "size_mult", 1.0), 3),
             "equity_after": round(self.equity, 4),
-            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "closed_at":   datetime.now(timezone.utc).isoformat(),
         }
         self.closed_trades.append(rec)
         logger.info(
-            "CLOSE #%d  %s %s  exit=%.4f  gross=%+.4f  fee_exit=%.4f  "
-            "net_pnl=%+.4f USDT  reason=%s  equity=%.2f",
+            "CLOSE #%d  %s %s  exit=%.4f  gross=%+.4f  "
+            "fee_entry=%.4f  fee_exit=%.4f  net_pnl=%+.4f USDT  reason=%s  equity=%.2f",
             self._trade_counter, pos.side.upper(), symbol,
-            exit_price, gross_pnl, exit_fee, net_pnl, reason, self.equity,
+            exit_price, gross_pnl, entry_fee, exit_fee, net_pnl, reason, self.equity,
         )
         return rec
 
@@ -289,7 +296,7 @@ def _compute_tp_sl(
 
 CSV_FIELDS = [
     "trade_id", "symbol", "side", "entry_price", "exit_price", "amount",
-    "gross_pnl", "fee_exit", "net_pnl", "hold_min", "reason",
+    "gross_pnl", "fee_entry", "fee_exit", "fee_total", "net_pnl", "hold_min", "reason",
     "regime", "adx_entry", "z_entry", "imb_entry", "size_mult", "equity_after", "closed_at",
 ]
 
