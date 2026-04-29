@@ -83,7 +83,8 @@ class SimPosition:
     z_at_entry: float
     imb_at_entry: float
     mei: Optional[float] = None   # 記錄用，不影響邏輯
-    pos_mult: float = 1.0         # 記錄用
+    pos_mult: float = 1.0         # ATMBot MEI 乘數（記錄用）
+    size_mult: float = 1.0        # ROUND10: AXS/SHORT 縮倉乘數（記錄用）
 
     def unrealized_pnl(self, mark: float) -> float:
         if self.side == "long":
@@ -156,6 +157,7 @@ class SimAccount:
             "adx_entry": round(pos.adx_at_entry, 2),
             "z_entry": round(pos.z_at_entry, 3),
             "imb_entry": round(pos.imb_at_entry, 3),
+            "size_mult": round(getattr(pos, "size_mult", 1.0), 3),
             "equity_after": round(self.equity, 4),
             "closed_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -200,50 +202,68 @@ def _sim_fill_price(ob: Dict, side: str, fallback: float) -> float:
     return sum(lv[0] * lv[1] for lv in levels if len(lv) > 1 and lv[0] and lv[1]) / total_sz
 
 
+
+# ── 每個 symbol 的 SL ATR 乘數表 ─────────────────────────────────────────────
+# 依據 paper trade CSV 回測結果：
+#   AXS：SL 觸發 5 次，最大單筆虧損 -2.40，ATR 估算偏大 → 縮至 0.5×
+#   其他 symbol：維持 1.0×ATR（LONG），SHORT 一律縮至 0.75× 減少不對稱虧損
+_SL_ATR_MULT: Dict[str, Dict[str, float]] = {
+    "AXS/USDC:USDC":        {"long": 0.5, "short": 0.5},
+    "HYPE/USDC:USDC":       {"long": 1.0, "short": 0.75},
+    "TAO/USDC:USDC":        {"long": 1.0, "short": 0.75},
+    "TRUMP/USDC:USDC":      {"long": 1.0, "short": 0.75},
+    "AAVE/USDC:USDC":       {"long": 1.0, "short": 0.75},
+    "FARTCOIN/USDC:USDC":   {"long": 1.0, "short": 0.75},
+    "XRP/USDC:USDC":        {"long": 1.0, "short": 0.75},
+}
+_SL_ATR_MULT_DEFAULT: Dict[str, float] = {"long": 1.0, "short": 0.75}
+
+
+def _sl_atr_mult(symbol: str, side: str) -> float:
+    """根據 symbol + side 查 SL ATR 乘數表，未知 symbol 回退預設值。"""
+    return _SL_ATR_MULT.get(symbol, _SL_ATR_MULT_DEFAULT).get(side, 1.0)
+
+
 def _compute_tp_sl(
     o1h: List[List[float]],
     o1m: List[List[float]],
     side: str,
     entry: float,
     regime: str = "chop",
+    symbol: str = "",
 ) -> tuple[float, float]:
     """
     MR 路徑（chop / neutral）：
         TP = 45m 均價（Z 回歸目標）
-        SL = entry ± 1.0 × ATR(14) on 1H
-
-    TREND 路徑（已移除，保留說明）：
-        舊版 TREND 跟隨已淘汰，改為反趨勢 MR（CTR_MR）。
+        SL = entry ± sl_mult × ATR(14) on 1H
+             sl_mult 由 _SL_ATR_MULT 表決定（AXS 固定 0.5×，SHORT 固定 0.75×）
 
     CTR_MR 路徑（ROUND8）：
-        TP = 45m 均價回歸（同普通 MR，反趨勢預期價格回到均值）
-        SL = entry ± ctr_sl_mult × ATR（WFA 最優 = 1.0×ATR）
+        TP = 45m 均價回歸
+        SL = entry ± sl_mult × ATR（同樣走 _SL_ATR_MULT 表，AXS 0.5×）
+
+    ROUND10 變更：
+        1. AXS SL 從 1.0× 縮至 0.5×（CSV 回測 5 次 SL 最大 -2.40 USDT）
+        2. SHORT SL 從 1.0× 縮至 0.75×（做空累計虧損主因）
+        3. 新增 symbol 參數傳入以查表，不影響交易數量
     """
     a = atr(o1h, 14) or (entry * 0.005)
+    sl_mult = _sl_atr_mult(symbol, side)
     is_ctr = "ctr_mr" in regime.lower()
 
-    if is_ctr:
-        # 反趨勢 MR：TP 回歸 45m 均價，SL = 1.0×ATR（WFA 優化值）
-        closes_1m = [x[4] for x in o1m]
-        window = min(45, len(closes_1m))
-        tp_price = sum(closes_1m[-window:]) / window
-        if side == "long":
-            sl_price = entry - 1.0 * a
-            tp_price = max(tp_price, entry + a * 0.5)
-        else:
-            sl_price = entry + 1.0 * a
-            tp_price = min(tp_price, entry - a * 0.5)
+    closes_1m = [x[4] for x in o1m]
+    window = min(45, len(closes_1m))
+    tp_price = sum(closes_1m[-window:]) / window
+
+    if side == "long":
+        sl_price = entry - sl_mult * a
+        tp_price = max(tp_price, entry + a * 0.5)
     else:
-        # 普通 MR：TP 回歸 45m 均價，SL 1×ATR
-        closes_1m = [x[4] for x in o1m]
-        window = min(45, len(closes_1m))
-        tp_price = sum(closes_1m[-window:]) / window
-        if side == "long":
-            sl_price = entry - a
-            tp_price = max(tp_price, entry + a * 0.5)
-        else:
-            sl_price = entry + a
-            tp_price = min(tp_price, entry - a * 0.5)
+        sl_price = entry + sl_mult * a
+        tp_price = min(tp_price, entry - a * 0.5)
+
+    # CTR_MR 不改變 sl_mult，只確認 TP 方向正確（邏輯同上，已涵蓋）
+    _ = is_ctr  # 保留參數相容性
 
     return tp_price, sl_price
 
@@ -253,7 +273,7 @@ def _compute_tp_sl(
 CSV_FIELDS = [
     "trade_id", "symbol", "side", "entry_price", "exit_price", "amount",
     "gross_pnl", "fee_rebate", "net_pnl", "hold_min", "reason",
-    "regime", "adx_entry", "z_entry", "imb_entry", "equity_after", "closed_at",
+    "regime", "adx_entry", "z_entry", "imb_entry", "size_mult", "equity_after", "closed_at",
 ]
 
 
@@ -343,11 +363,22 @@ class PaperTradeBot:
             logger.warning("No OHLCV cache for %s — skip signal", symbol)
             return
 
-        # *** ROUND5.1: pass regime so TREND uses ATR-based TP/SL
-        tp_price, sl_price = _compute_tp_sl(o1h, o1m, side, fill_price, regime=regime)
+        # ROUND10: pass symbol so _compute_tp_sl uses per-symbol SL ATR mult table
+        tp_price, sl_price = _compute_tp_sl(o1h, o1m, side, fill_price, regime=regime, symbol=symbol)
 
         mei      = sig.get("mei")
-        pos_mult = sig.get("pos_mult", 1.0)
+        pos_mult = float(sig.get("pos_mult", 1.0))
+
+        # ── ROUND10: 幣種 / 方向倉位乘數 ──────────────────────────────────
+        # 1. AXS 改為半倉（SL 已縮 0.5×，名目風險維持相近水平）
+        # 2. SHORT 方向一律半倉（CSV 做空累計虧損主因）
+        # 兩者可疊加（AXS short = 0.5 × 0.5 = 0.25×），但不低於 0.25×
+        if "AXS" in symbol:
+            pos_mult *= 0.5
+        if side == "short":
+            pos_mult *= 0.5
+        pos_mult = max(pos_mult, 0.25)
+
         # ── 最小利潤門檻 ────────────────────────────────────────────────────
         # TP 距離必須 > min_tp_fee_multiple × round-trip fee，
         # 否則即使全部 TP 也只是在養交易所，沒有實質 edge。
@@ -399,8 +430,12 @@ class PaperTradeBot:
         最精簡 MR 入場：
           Entry : |Z| ∈ [z_entry_min, z_entry_max]（1m rolling Z-score）
           TP    : 45m mean（Z 回歸 0）
-          SL    : entry ± 1× ATR(14, 1H)
+          SL    : entry ± sl_mult × ATR(14, 1H)（AXS 0.5×，SHORT 0.75×）
         所有其他 Gate（regime、exhaustion、volume proxy、MEI、imbalance）全部移除。
+
+        ROUND10 變更：
+          - _compute_tp_sl 傳入 symbol，使用 _SL_ATR_MULT 查表
+          - AXS 倉位縮半，SHORT 倉位縮半，不減少交易次數
         """
         z_min = self._session.z_entry_min
         z_max = self._session.z_entry_max
@@ -434,10 +469,20 @@ class PaperTradeBot:
             # 使用緩存的最新 1m close 作為成交價（紙交易不需額外 REST）
             fill_price = float(closes_1m[-1])
 
-            tp_price, sl_price = _compute_tp_sl(o1h, o1m, side, fill_price)
+            # ROUND10: pass symbol to use per-symbol SL ATR mult (_SL_ATR_MULT table)
+            tp_price, sl_price = _compute_tp_sl(o1h, o1m, side, fill_price, symbol=symbol)
+
+            # ── ROUND10: 幣種 / 方向倉位乘數 ──────────────────────────────
+            # AXS 半倉 + SHORT 半倉（不減少交易次數，只調整倉位大小）
+            size_mult = 1.0
+            if "AXS" in symbol:
+                size_mult *= 0.5
+            if side == "short":
+                size_mult *= 0.5
+            size_mult = max(size_mult, 0.25)
 
             notional = self._session.equity_usdt * self._session.risk_fraction_per_symbol * 8.0
-            raw_amt = notional / max(fill_price, 1e-9)
+            raw_amt = (notional / max(fill_price, 1e-9)) * size_mult
             try:
                 amount = float(self._ex.amount_to_precision(symbol, raw_amt))
             except Exception:
@@ -457,6 +502,7 @@ class PaperTradeBot:
                 adx_at_entry=0.0,
                 z_at_entry=float(z_val),
                 imb_at_entry=0.0,
+                size_mult=size_mult,
             )
             self.account.open(pos)
 
