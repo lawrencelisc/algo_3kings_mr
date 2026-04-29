@@ -98,10 +98,22 @@ class SimPosition:
 
 @dataclass
 class SimAccount:
-    """模擬帳戶：資金、倉位、交易記錄。"""
+    """模擬帳戶：資金、倉位、交易記錄。
+
+    ROUND10 費用修正（依截圖 HL 實際費率）：
+      entry  = maker ALO  → 扣 0.0384%（maker fee，非 rebate）
+      TP/DECEL exit = 假設 maker ALO 掛單成交 → 扣 0.0384%
+      SL exit       = 市價緊急平倉 → 扣 0.0400%（taker fee）
+
+    來回最低費用：0.0384% + 0.0384% = 0.0768%（全 maker）
+    來回最高費用：0.0384% + 0.0400% = 0.0784%（entry maker + SL taker）
+
+    注意：原版用 maker_rebate +0.002% 是錯方向（加錢），
+          實際 HL 掛單是「付費」不是「收 rebate」。
+    """
     initial_equity: float
-    maker_rebate: float = 0.00002   # +0.002% per fill
-    taker_fee: float = 0.00035      # 不用，但記錄用
+    maker_fee: float = 0.000384    # 0.0384%：entry 及 TP/DECEL 平倉
+    taker_fee: float = 0.000400    # 0.0400%：SL 平倉（market order）
 
     equity: float = field(init=False)
     positions: Dict[str, SimPosition] = field(default_factory=dict, init=False)
@@ -115,30 +127,35 @@ class SimAccount:
         if pos.symbol in self.positions:
             logger.warning("Already have position in %s — skip new signal", pos.symbol)
             return
-        fee = pos.entry_price * pos.amount * self.maker_rebate
-        self.equity += fee
+        # 開倉：扣 maker fee（0.0384%）
+        entry_fee = pos.entry_price * pos.amount * self.maker_fee
+        self.equity -= entry_fee
         self.positions[pos.symbol] = pos
         self._trade_counter += 1
         logger.info(
             "OPEN  #%d  %s %s  qty=%.6f  entry=%.4f  TP=%.4f  SL=%.4f  "
             "regime=%s  ADX=%.1f  Z=%.2f  imb=%.2f  "
-            "MEI=%s  pos_mult=%.1f",
+            "MEI=%s  pos_mult=%.1f  entry_fee=%.4f",
             self._trade_counter, pos.side.upper(), pos.symbol,
             pos.amount, pos.entry_price, pos.tp_price, pos.sl_price,
             pos.regime, pos.adx_at_entry, pos.z_at_entry, pos.imb_at_entry,
             f"{pos.mei:.3f}" if pos.mei is not None else "n/a", pos.pos_mult,
+            entry_fee,
         )
 
     def close(self, symbol: str, exit_price: float, reason: str) -> Optional[Dict]:
         pos = self.positions.pop(symbol, None)
         if pos is None:
             return None
-        fee = exit_price * pos.amount * self.maker_rebate
+        # 平倉費用：SL 用 taker 0.0400%（market order），TP/DECEL 用 maker 0.0384%
+        # entry_fee 已在 open() 扣除，不在此重複計
+        exit_fee_rate = self.taker_fee if reason == "SL" else self.maker_fee
+        exit_fee = exit_price * pos.amount * exit_fee_rate
         if pos.side == "long":
             gross_pnl = (exit_price - pos.entry_price) * pos.amount
         else:
             gross_pnl = (pos.entry_price - exit_price) * pos.amount
-        net_pnl = gross_pnl + fee
+        net_pnl = gross_pnl - exit_fee
         self.equity += net_pnl
         hold_min = (time.time() - pos.entry_time) / 60.0
         rec = {
@@ -149,7 +166,7 @@ class SimAccount:
             "exit_price": exit_price,
             "amount": pos.amount,
             "gross_pnl": round(gross_pnl, 6),
-            "fee_rebate": round(fee, 6),
+            "fee_exit": round(exit_fee, 6),
             "net_pnl": round(net_pnl, 6),
             "hold_min": round(hold_min, 1),
             "reason": reason,
@@ -163,10 +180,10 @@ class SimAccount:
         }
         self.closed_trades.append(rec)
         logger.info(
-            "CLOSE #%d  %s %s  exit=%.4f  net_pnl=%+.4f USDT  reason=%s  "
-            "equity=%.2f",
+            "CLOSE #%d  %s %s  exit=%.4f  gross=%+.4f  fee_exit=%.4f  "
+            "net_pnl=%+.4f USDT  reason=%s  equity=%.2f",
             self._trade_counter, pos.side.upper(), symbol,
-            exit_price, net_pnl, reason, self.equity,
+            exit_price, gross_pnl, exit_fee, net_pnl, reason, self.equity,
         )
         return rec
 
@@ -272,7 +289,7 @@ def _compute_tp_sl(
 
 CSV_FIELDS = [
     "trade_id", "symbol", "side", "entry_price", "exit_price", "amount",
-    "gross_pnl", "fee_rebate", "net_pnl", "hold_min", "reason",
+    "gross_pnl", "fee_exit", "net_pnl", "hold_min", "reason",
     "regime", "adx_entry", "z_entry", "imb_entry", "size_mult", "equity_after", "closed_at",
 ]
 
